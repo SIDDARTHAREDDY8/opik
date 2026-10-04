@@ -38,6 +38,23 @@ def _accumulate_event(
     return _messages.accumulate_event(event=event, current_snapshot=current_snapshot)
 
 
+def _current_message_snapshot_or_none(message_stream: Any) -> Any:
+    """Return the message accumulated so far, without reading the stream further.
+
+    `MessageStream.current_message_snapshot` reflects exactly the events the
+    caller has already consumed. Using it (instead of `get_final_message()`)
+    never drains an abandoned stream and never touches an already-closed
+    response, while still ending the span promptly on early exit.
+
+    It asserts when no event was consumed yet (e.g. the caller left the loop
+    before the first chunk); treat that as "nothing to log".
+    """
+    try:
+        return message_stream.current_message_snapshot
+    except AssertionError:
+        return None
+
+
 original_stream_iter_method = anthropic.Stream.__iter__
 original_async_stream_aiter_method = anthropic.AsyncStream.__aiter__
 
@@ -255,8 +272,12 @@ def patch_sync_message_stream_manager(
             finally:
                 if hasattr(self, "opik_tracked_instance"):
                     delattr(self, "opik_tracked_instance")
+                    # Log only what the caller actually read: get_final_message()
+                    # would drain the rest of an abandoned stream here.
                     accumulated_output = (
-                        self.get_final_message() if error_info is None else None
+                        _current_message_snapshot_or_none(self)
+                        if error_info is None
+                        else None
                     )
                     finally_callback(
                         output=accumulated_output,
@@ -341,8 +362,13 @@ def patch_async_message_stream_manager(
             finally:
                 if hasattr(self, "opik_tracked_instance"):
                     delattr(self, "opik_tracked_instance")
+                    # Log only what the caller actually read: awaiting
+                    # get_final_message() would drain an abandoned stream, and
+                    # raise on an already-closed response, leaving the span open.
                     accumulated_output = (
-                        await self.get_final_message() if error_info is None else None
+                        _current_message_snapshot_or_none(self)
+                        if error_info is None
+                        else None
                     )
                     finally_callback(
                         output=accumulated_output,
@@ -426,8 +452,12 @@ def patch_sync_beta_message_stream_manager(
             finally:
                 if hasattr(self, "opik_tracked_instance"):
                     delattr(self, "opik_tracked_instance")
+                    # Log only what the caller actually read: get_final_message()
+                    # would drain the rest of an abandoned stream here.
                     accumulated_output = (
-                        self.get_final_message() if error_info is None else None
+                        _current_message_snapshot_or_none(self)
+                        if error_info is None
+                        else None
                     )
                     finally_callback(
                         output=accumulated_output,
@@ -506,8 +536,13 @@ def patch_async_beta_message_stream_manager(
             finally:
                 if hasattr(self, "opik_tracked_instance"):
                     delattr(self, "opik_tracked_instance")
+                    # Log only what the caller actually read: awaiting
+                    # get_final_message() would drain an abandoned stream, and
+                    # raise on an already-closed response, leaving the span open.
                     accumulated_output = (
-                        await self.get_final_message() if error_info is None else None
+                        _current_message_snapshot_or_none(self)
+                        if error_info is None
+                        else None
                     )
                     finally_callback(
                         output=accumulated_output,
